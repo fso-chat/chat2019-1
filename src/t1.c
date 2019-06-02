@@ -21,6 +21,7 @@ char user_queue[QUEUE_PREFIX + USER_MAX];
 
 void create_queue(char *filename) {
     struct mq_attr attr;
+    mode_t oldMask, newMask;
 
     strcpy(user_queue, "/chat-");
     strcat(user_queue, user);
@@ -29,6 +30,9 @@ void create_queue(char *filename) {
     attr.mq_msgsize = sizeof(char) * MSGLEN; // tamanho de cada mensagem
     attr.mq_flags = 0;
 
+    oldMask = umask((mode_t)0); //Pega umask antigo
+    umask(0155); //Proíbe execução para o dono, leitura e execução para os demais 
+
     mqd_t open_queue = mq_open(user_queue, O_RDWR|O_CREAT, 0666, &attr);
 
     if(open_queue < 0) {
@@ -36,15 +40,9 @@ void create_queue(char *filename) {
         exit(1);
     }
 
+    umask(oldMask); //Seta umask novamente para o que estava 
+
     mq_close(open_queue);
-
-    // char mode[] = "226";
-    // int m = strtol(mode, 0, 8);
-
-    // if(chmod(filename, m) < 0) {
-    //     fprintf(stderr, "\nerror in chmod\n");
-    // }
-
 }
 
 void user_register() {
