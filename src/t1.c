@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <signal.h>
+#include <dirent.h>
 
 #define USER_MAX 10
 #define FILE_PREFIX 17
@@ -232,6 +233,32 @@ void handler_interruption() {
     fprintf(stderr, "\nPara sair, digite 'sair'\n");
 }
 
+char *split_file_name(char *name){
+    char *ptr = strtok(name, "-");
+    ptr = strtok(NULL, "-");
+    
+    return ptr;
+}
+
+void users_list(){
+    DIR *directory = opendir("/dev/mqueue"); 
+    struct dirent *files;
+    char *user_name;
+
+    if(directory == NULL)
+        printf("\nNão foi possível listar membros online.\n");
+    else{
+        printf("\nLista de membros:\n\n");
+        while((files = readdir(directory)) != NULL){
+            user_name = split_file_name(files->d_name);
+            if(user_name != NULL){
+                printf(">> %s\n", user_name);
+            }
+        }
+    }
+    closedir(directory); 
+}
+
 int main() {
 
     user_register();
@@ -254,6 +281,10 @@ int main() {
         if(strcmp(message, "sair") == 0){
             mq_unlink(user_queue);
             exit(0);
+        }
+        else if(strcmp(message, "list") == 0){            
+            users_list();
+            continue;
         }
         else if(message[0] != '@') {
             fprintf(stderr, "\nUNKNOWNCOMMAND %s\n", message);
