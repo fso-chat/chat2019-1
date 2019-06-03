@@ -20,6 +20,16 @@
 char user[USER_MAX];
 char user_queue[QUEUE_PREFIX + USER_MAX];
 
+typedef struct users {
+    char *user_name;
+    struct users *next;
+} USERS;
+
+typedef struct retry_message {
+    char *dest;
+    char *msg_sent;
+} R_MESSAGE;
+
 void create_queue(char *filename) {
     struct mq_attr attr;
     mode_t oldMask, newMask;
@@ -128,42 +138,86 @@ void split_message_sent(char *message, char *dest, char *msg) {
     }
 }
 
-void format_msg(char *message, char *dest, char *msg_sent) {
-    char msg[MSG_MAX];
-    
-    split_message_sent(message, dest, msg);
+USERS *insert(USERS *l, char *user_name){
+    USERS *new = (USERS*) malloc(sizeof(USERS));
 
-    strcpy(msg_sent, user);
-    strcat(msg_sent, ":");
-    strcat(msg_sent, dest);
-    strcat(msg_sent, ":");
-    strcat(msg_sent, msg);
+    new->user_name = user_name;
+    new->next = l;
+
+    return new;
+}
+
+char *split_file_name(char *name){
+    char *ptr = strtok(name, "-");
+    ptr = strtok(NULL, "-");
+    
+    return ptr;
+}
+
+USERS *get_users_list(){
+    USERS *users_list = NULL;
+    DIR *directory = opendir("/dev/mqueue"); 
+    struct dirent *files;
+    char *user_name;
+
+    if(directory == NULL)
+        fprintf(stderr, "\nOcorreu um erro ao carregar usuários online.\n");
+    else{
+        while((files = readdir(directory)) != NULL){
+            user_name = split_file_name(files->d_name);
+            if(user_name != NULL){
+                users_list = insert(users_list, user_name);
+            }
+        }
+    }
+    closedir(directory);
+
+    return users_list; 
+}
+
+void destroy_users_list(USERS *l) {
+    USERS *aux = l;
+    USERS *temp;
+
+    while(aux != NULL) {
+        temp = aux;
+        aux = aux->next;
+        free(temp);
+    }
+}
+
+void format_msg(char *dest, char *msg_sent, char *msg) {
+    strcpy(msg, user);
+    strcat(msg, ":");
+    strcat(msg, dest);
+    strcat(msg, ":");
+    strcat(msg, msg_sent);
 }
 
 void *retry_send_message(void *m) {
-    char queue[QUEUE_PREFIX + USER_MAX];    
-    char *message = (char *) m;
-    char dest[USER_MAX], msg_sent[MSGLEN];
+    char queue[QUEUE_PREFIX + USER_MAX];
+    char msg[MSGLEN];
+    R_MESSAGE *r_msg = (R_MESSAGE *) m;
 
-    format_msg(message, dest, msg_sent);
+    format_msg(r_msg->dest, r_msg->msg_sent, msg);
 
     strcpy(queue, "/chat-");
-    strcat(queue, dest);
+    strcat(queue, r_msg->dest);
 
     mqd_t open_queue = mq_open(queue, O_RDWR);
 
     if(open_queue < 0)
-        fprintf(stderr, "\nUNKNOWNUSER %s\n", dest);
+        fprintf(stderr, "\nUNKNOWNUSER %s\n", r_msg->dest);
     else {
         int i;
         for(i = 0; i < 3; i++) {
             sleep(0.5);
-            if((mq_send(open_queue, (void *) msg_sent, strlen(msg_sent), 0)) >= 0)
+            if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) >= 0)
                 break;
         }
 
         if(i == 3)
-            fprintf(stderr, "\nERRO %s\n", message);
+            fprintf(stderr, "\nErro ao enviar mensagem para @%s\n", r_msg->dest);
     
         mq_close(open_queue);
     }
@@ -172,31 +226,55 @@ void *retry_send_message(void *m) {
     pthread_exit((void *)&r);
 }
 
-void send_message_in_queue(char *message) {
+void send_message_in_queue(char *dest, char *msg_sent) {
     char queue[QUEUE_PREFIX + USER_MAX];
-    char dest[USER_MAX], msg_sent[MSGLEN];
+    char msg[MSGLEN];
     
-    format_msg(message, dest, msg_sent);
+    format_msg(dest, msg_sent, msg);
 
     strcpy(queue, "/chat-");
     strcat(queue, dest);
 
     mqd_t open_queue = mq_open(queue, O_RDWR);
+    
     pthread_t retry;
+    R_MESSAGE *r_msg = (R_MESSAGE*) malloc(sizeof(R_MESSAGE));
+
+    r_msg->dest = dest;
+    r_msg->msg_sent = msg_sent;
 
     if(open_queue < 0)
         fprintf(stderr, "\nUNKNOWNUSER %s\n", dest);
     else {
-        if((mq_send(open_queue, (void *) msg_sent, strlen(msg_sent), 0)) < 0)
-            pthread_create(&retry, NULL, retry_send_message, (void *) message);
+        if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0)
+            pthread_create(&retry, NULL, retry_send_message, (void *) r_msg);
     
         mq_close(open_queue);
     }
 }
 
 void *send_message(void *m) {
+    char dest[USER_MAX], msg_sent[MSGLEN];
     char *message = (char *) m;
-    send_message_in_queue(message);
+
+    USERS *users_list = NULL;
+    USERS *aux;
+
+    split_message_sent(message, dest, msg_sent);
+
+    if(strcmp(dest, "all") == 0) {
+        users_list = get_users_list();
+        aux = users_list;
+
+        while(aux != NULL) {
+            if(strcmp(aux->user_name, user) != 0)
+                send_message_in_queue(aux->user_name, msg_sent);
+            aux = aux->next;
+        }
+    }
+    else {
+        send_message_in_queue(dest, msg_sent);
+    }
 
     int r = 0;
     pthread_exit((void *)&r);
@@ -233,30 +311,19 @@ void handler_interruption() {
     fprintf(stderr, "\nPara sair, digite 'sair'\n");
 }
 
-char *split_file_name(char *name){
-    char *ptr = strtok(name, "-");
-    ptr = strtok(NULL, "-");
-    
-    return ptr;
-}
+void users_list() {
+    USERS *users_list = get_users_list();
+    USERS *aux = users_list;
 
-void users_list(){
-    DIR *directory = opendir("/dev/mqueue"); 
-    struct dirent *files;
-    char *user_name;
-
-    if(directory == NULL)
-        printf("\nNão foi possível listar membros online.\n");
-    else{
-        printf("\nLista de membros:\n\n");
-        while((files = readdir(directory)) != NULL){
-            user_name = split_file_name(files->d_name);
-            if(user_name != NULL){
-                printf(">> %s\n", user_name);
-            }
+    if(users_list) {
+        fprintf(stderr, "\nLista de Usuários Online:\n\n");
+        while(aux != NULL) {
+            fprintf(stderr, "%s\n", aux->user_name);
+            aux = aux->next;
         }
+
+        destroy_users_list(users_list);
     }
-    closedir(directory); 
 }
 
 int main() {
