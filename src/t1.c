@@ -25,11 +25,6 @@ typedef struct users {
     struct users *next;
 } USERS;
 
-typedef struct retry_message {
-    char *dest;
-    char *msg_sent;
-} R_MESSAGE;
-
 void create_queue(char *filename) {
     struct mq_attr attr;
     mode_t oldMask, newMask;
@@ -71,10 +66,10 @@ void user_register() {
     if(is_user == NULL) {
         create_queue(filename);
     }
-    // else {
-    //     printf("\n\nNome de usuario indisponivel!\n\n");
-    //     exit(0);
-    // }
+    else {
+        printf("\n\nNome de usuario indisponivel!\n\n");
+        exit(0);
+    }
 
 }
 
@@ -90,12 +85,7 @@ void split_message_received(char *message, char *remet, char *dest, char *msg) {
             dest[j] = message[i];
             j++;
         }
-        else if(message[i] != ':' && flag == 2) {
-            msg[j] = message[i];
-            j++;
-        }
-        else if(message[i] == ':') {
-
+        else if(message[i] == ':' && flag != 2) {
             if(flag == 0)
                 remet[j] = '\0';
             else if(flag == 1)
@@ -103,6 +93,10 @@ void split_message_received(char *message, char *remet, char *dest, char *msg) {
 
             flag++;
             j = 0;
+        }
+        else {
+            msg[j] = message[i];
+            j++;
         }
 
         i++;
@@ -135,13 +129,12 @@ void split_message_sent(char *message, char *dest, char *msg) {
     msg[j] = '\0';
 }
 
-USERS *insert_in_users_list(USERS *l, char *user_name){
-    USERS *new = (USERS*) malloc(sizeof(USERS));
-
-    new->user_name = user_name;
-    new->next = l;
-
-    return new;
+void format_msg(char *dest, char *msg_sent, char *msg) {
+    strcpy(msg, user);
+    strcat(msg, ":");
+    strcat(msg, dest);
+    strcat(msg, ":");
+    strcat(msg, msg_sent);
 }
 
 char *split_file_name(char *name){
@@ -149,6 +142,15 @@ char *split_file_name(char *name){
     ptr = strtok(NULL, "-");
     
     return ptr;
+}
+
+USERS *insert_in_users_list(USERS *l, char *user_name){
+    USERS *new = (USERS*) malloc(sizeof(USERS));
+
+    new->user_name = user_name;
+    new->next = l;
+
+    return new;
 }
 
 USERS *get_users_list(){
@@ -183,28 +185,22 @@ void destroy_users_list(USERS *l) {
     }
 }
 
-void format_msg(char *dest, char *msg_sent, char *msg) {
-    strcpy(msg, user);
-    strcat(msg, ":");
-    strcat(msg, dest);
-    strcat(msg, ":");
-    strcat(msg, msg_sent);
-}
-
 void *retry_send_message(void *m) {
     char queue[QUEUE_PREFIX + USER_MAX];
+    char dest[USER_MAX], msg_sent[MSG_MAX];
     char msg[MSGLEN];
-    R_MESSAGE *r_msg = (R_MESSAGE *) m;
+    char *message = (char *) m;
 
-    format_msg(r_msg->dest, r_msg->msg_sent, msg);
+    split_message_sent(message, dest, msg_sent);
+    format_msg(dest, msg_sent, msg);
 
     strcpy(queue, "/chat-");
-    strcat(queue, r_msg->dest);
+    strcat(queue, dest);
 
     mqd_t open_queue = mq_open(queue, O_RDWR);
 
     if(open_queue < 0)
-        fprintf(stderr, "\nUNKNOWNUSER %s\n", r_msg->dest);
+        fprintf(stderr, "\nUNKNOWNUSER %s\n", dest);
     else {
         int i;
         for(i = 0; i < 3; i++) {
@@ -214,7 +210,7 @@ void *retry_send_message(void *m) {
         }
 
         if(i == 3)
-            fprintf(stderr, "\nErro ao enviar mensagem para @%s\n", r_msg->dest);
+            fprintf(stderr, "\nErro ao enviar mensagem para @%s\n", dest);
     
         mq_close(open_queue);
     }
@@ -235,16 +231,12 @@ void send_message_in_queue(char *dest, char *msg_sent) {
     mqd_t open_queue = mq_open(queue, O_RDWR);
     
     pthread_t retry;
-    R_MESSAGE *r_msg = (R_MESSAGE*) malloc(sizeof(R_MESSAGE));
-
-    r_msg->dest = dest;
-    r_msg->msg_sent = msg_sent;
 
     if(open_queue < 0)
         fprintf(stderr, "\nUNKNOWNUSER %s\n", dest);
     else {
         if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0)
-            pthread_create(&retry, NULL, retry_send_message, (void *) r_msg);
+            pthread_create(&retry, NULL, retry_send_message, (void *) msg);
     
         mq_close(open_queue);
     }
@@ -285,9 +277,8 @@ void *listen() {
     strcat(queue, user);
 
     mqd_t open_queue = mq_open(queue, O_RDWR);
- 
-    char message[MSGLEN];
-    char remet[USER_MAX], dest[USER_MAX], msg[MSG_MAX];
+
+    char message[MSGLEN], remet[USER_MAX], dest[USER_MAX], msg[MSG_MAX];
 
     while(1) {
         if((mq_receive(open_queue, (void *) message, MSGLEN, 0)) < 0) {
@@ -297,7 +288,9 @@ void *listen() {
         }
 
         split_message_received(message, remet, dest, msg);
-        fprintf(stderr, "\n%s: %s\n\n", remet, msg);
+        fprintf(stderr, ">> %s: %s\n\n", remet, msg);
+
+        memset(message, 0, strlen(message));
     }
 
     mq_close(open_queue);
