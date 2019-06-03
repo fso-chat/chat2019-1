@@ -119,26 +119,23 @@ void split_message_sent(char *message, char *dest, char *msg) {
             dest[j] = message[i];
             j++;
         }
-        else if(message[i] != ' ' && flag == 1){
-            msg[j] = message[i];
-            j++;
-        }
-        else if(message[i] == ' ') {
-            
-            if(flag == 0)
-                dest[j] = '\0';
-            else if(flag == 1)
-                msg[j] = '\0';
-
+        else if(message[i] == ' ' && flag == 0) {
+            dest[j] = '\0';
             flag++;
             j = 0;
+        }
+        else if(flag == 1){
+            msg[j] = message[i];
+            j++;
         }
 
         i++;
     }
+
+    msg[j] = '\0';
 }
 
-USERS *insert(USERS *l, char *user_name){
+USERS *insert_in_users_list(USERS *l, char *user_name){
     USERS *new = (USERS*) malloc(sizeof(USERS));
 
     new->user_name = user_name;
@@ -166,7 +163,7 @@ USERS *get_users_list(){
         while((files = readdir(directory)) != NULL){
             user_name = split_file_name(files->d_name);
             if(user_name != NULL){
-                users_list = insert(users_list, user_name);
+                users_list = insert_in_users_list(users_list, user_name);
             }
         }
     }
@@ -271,6 +268,8 @@ void *send_message(void *m) {
                 send_message_in_queue(aux->user_name, msg_sent);
             aux = aux->next;
         }
+
+        destroy_users_list(users_list);
     }
     else {
         send_message_in_queue(dest, msg_sent);
