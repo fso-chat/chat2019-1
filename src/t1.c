@@ -58,6 +58,11 @@ void user_register() {
     printf("\nInsira um nome de usuario: ");
     scanf("%s", user);
 
+    if(strcmp(user,"all") == 0){
+        printf("\nNome de usuário inválido!\n");
+        exit(0);        
+    }
+
     strcpy(filename, "/dev/mqueue/chat-");
     strcat(filename, user);
 
