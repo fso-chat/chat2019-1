@@ -10,7 +10,7 @@ Nele, foram implementados os seguintes protocolos:
 - As filas criadas possuem permissão de leitura e escrita para o dono e apenas escrita para os demais. 
 - Bloqueio de saída com ^C através do tratamento do sinal SIGINT
 - Apresenta  UNKNOWNUSER PARA se fila do destinatário não existe
-- Quando não é possível enviar mensagem para uma fila, tenta três vezes. Se ainda assim no conseguir imprime ERRO DE:PARA:MSG
+- Quando não é possível enviar mensagem para uma fila, tenta três vezes. Se ainda assim não conseguir imprime ERRO DE:PARA:MSG
 - Comando list para listar usuários online
 - BroadCast ao usar comando @all msg 
 - Thread para esperar mensagem e para enviar 
@@ -23,3 +23,11 @@ Dificuldades de implementação do modelo de threads:
 
 - Perceber a necessidade de "esperar" o retorno de uma thread
 
+## Como usar 
+
+0. Compile com: gcc t1.c -lrt -lpthread e execute: ./a.out 
+1. Ao entrar, digite um nome de usuário
+2. Digite list para verificar os usuários online
+3. Escolha um usuário e envie uma mensagem com o comando: @usuario Mensagem
+4. Caso queira enviar uma mensagem para todos, digite : @all Mensagem
+5. Para sair do chat, digite: sair
