@@ -25,7 +25,7 @@ Dificuldades de implementação do modelo de threads:
 
 ## Como usar 
 
-0. Compile com: gcc t1.c -lrt -lpthread e execute: ./a.out 
+0. Compile com: gcc t1.c -lrt -lpthread e execute: ./a.out OU na pasta principal digite make e depois ./chat2019 
 1. Ao entrar, digite um nome de usuário
 2. Digite list para verificar os usuários online
 3. Escolha um usuário e envie uma mensagem com o comando: @usuario Mensagem
