@@ -6,22 +6,24 @@ Nele, foram implementados os seguintes protocolos:
 
 - Filas POSIX no padrão chat-usuario para cada usuário
 - Envio de mensagens para a fila no padrão DE:PARA:MENSAGEM
-- Apresentação da mensagem no formato De: MSG
+- Apresentação da mensagem no formato DE: MSG
 - As filas criadas possuem permissão de leitura e escrita para o dono e apenas escrita para os demais. 
 - Bloqueio de saída com ^C através do tratamento do sinal SIGINT
 - Apresenta  UNKNOWNUSER PARA se fila do destinatário não existe
 - Quando não é possível enviar mensagem para uma fila, tenta três vezes. Se ainda assim não conseguir imprime ERRO DE:PARA:MSG
 - Comando list para listar usuários online
 - BroadCast ao usar comando @all msg 
+- Apresentação das mensagens do tipo broadcast no formato Broadcast de DE: MSG
 - Thread para esperar mensagem e para enviar 
 
-Problemas conhecidos: 
+## Problemas conhecidos 
 
-- Não foi realizado teste de lotação da fila de mensagens ou de fluxos grandes de mensagens.
+- Não foi realizado teste de lotação da fila de mensagens ou de fluxos grandes de mensagens;
+- Se o usuário receber uma mensagem enquanto estiver digitando uma mensagem para enviar, a mensagem sendo digitada vai ficar quebrada na tela, com a mensagem recebida "atrapalhando" a visualização.
 
-Dificuldades de implementação do modelo de threads:
+## Dificuldades de implementação do modelo de threads
 
-- Perceber a necessidade de "esperar" o retorno de uma thread
+- Perceber a necessidade de "esperar" o retorno de uma thread.
 
 ## Como usar 
 
