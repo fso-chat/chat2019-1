@@ -182,7 +182,7 @@ USERS *get_users_list(){
     }
     closedir(directory);
 
-    return users_list; 
+    return users_list;
 }
 
 void destroy_users_list(USERS *l) {
@@ -211,7 +211,7 @@ void *retry_send_message(void *m) {
     strcpy(queue, "/chat-");
     strcat(queue, r_msg->dest);
 
-    mqd_t open_queue = mq_open(queue, O_RDWR);
+    mqd_t open_queue = mq_open(queue, O_WRONLY);
 
     if(open_queue < 0)
         fprintf(stderr, "\nUNKNOWNUSER %s\n", r_msg->dest);
@@ -247,7 +247,7 @@ void send_message_in_queue(char *dest, char *msg_sent, int broadcast) {
     strcpy(queue, "/chat-");
     strcat(queue, dest);
 
-    mqd_t open_queue = mq_open(queue, O_RDWR);
+    mqd_t open_queue = mq_open(queue, O_WRONLY);
     
     pthread_t retry;
     R_MESSAGE *r_msg = (R_MESSAGE*) malloc(sizeof(R_MESSAGE));
