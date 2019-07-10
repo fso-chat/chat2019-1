@@ -19,6 +19,7 @@
 #define MESSAGE 512
 #define CODE_LEN 5
 #define CONFIRM_MESSAGE 30
+#define CHANNEL_MAX
 
 char user[USER_MAX];
 char user_queue[QUEUE_PREFIX + USER_MAX];
@@ -59,6 +60,7 @@ void create_queue() {
 
     if(open_queue < 0) {
         perror("mq_open\n");
+        mq_unlink(user_queue);
         exit(1);
     }
 
@@ -177,7 +179,9 @@ char *split_file_name(char *name){
 USERS *insert_in_users_list(USERS *l, char *user_name){
     USERS *new = (USERS*) malloc(sizeof(USERS));
 
-    new->user_name = user_name;
+    new->user_name = malloc(sizeof(char) * USER_MAX);
+
+    strcpy(new->user_name, user_name);
     new->next = l;
 
     return new;
@@ -189,13 +193,18 @@ USERS *get_users_list(){
     struct dirent *files;
     char *user_name;
 
+    char test[5];
+
     if(directory == NULL)
         fprintf(stderr, "\nOcorreu um erro ao carregar usuários online.\n");
     else{
         while((files = readdir(directory)) != NULL){
-            user_name = split_file_name(files->d_name);
-            if(user_name != NULL){
-                users_list = insert_in_users_list(users_list, user_name);
+            strncpy(test, files->d_name, 5);
+            if(strcmp(test, "chat-") == 0) {
+                user_name = split_file_name(files->d_name);
+                if(user_name != NULL){
+                    users_list = insert_in_users_list(users_list, user_name);
+                }
             }
         }
     }
@@ -264,16 +273,13 @@ void format_confirm_message(char *msg, char *remet, char *dest, char *code, char
 }
 
 void *create_code_queue(void *c) {
+    mode_t oldMask, newMask;
     char *code = (char *) c;
-
-    fprintf(stderr, "\ncodigo da msg: %s\n", code);
 
     char queue_name[CODE_LEN+1];
 
     strcpy(queue_name, "/");
-    strcat(queue_name, code);
-
-    fprintf(stderr, "\nnome da fila: %s\n", queue_name);        
+    strcat(queue_name, code);       
 
     struct mq_attr attr;
 
@@ -281,24 +287,40 @@ void *create_code_queue(void *c) {
     attr.mq_msgsize = sizeof(char) * CONFIRM_MESSAGE; // tamanho de cada mensagem
     attr.mq_flags = 0;
 
-    mqd_t open_queue = mq_open(queue_name, O_RDWR|O_CREAT, 0666, &attr);
+    oldMask = umask((mode_t)0); //Pega umask antigo
+    umask(7777);
+
+    mqd_t open_queue = mq_open(queue_name, O_RDONLY|O_CREAT, 0666, &attr);
 
     if(open_queue < 0) {
         perror("mq_open\n");
+        mq_unlink(queue_name);
+        mq_unlink(user_queue);
         exit(1);
     }
+
+    umask(oldMask);
 
     char confirm_message[CONFIRM_MESSAGE];
     char remet[USER_MAX], dest[USER_MAX], code_r[CODE_LEN], type[2];
     char msg[CONFIRM_MESSAGE];
     
     if((mq_receive(open_queue, (void *)confirm_message, CONFIRM_MESSAGE, 0)) < 0) {
-        perror("\nmq_receive");
+        perror("\nmq_receive: could not confirm msg sent.");
         mq_unlink(queue_name);
-        exit(1);
     }
     else {
-        fprintf(stderr, "\nMsg recebida: %s", confirm_message);
+        mq_close(open_queue);
+
+        open_queue = mq_open(queue_name, O_WRONLY);
+
+        if(open_queue < 0) {
+            perror("\nmq_open");
+            mq_unlink(queue_name);
+            mq_unlink(user_queue);
+            exit(1);
+        }
+
         split_confirm_message(confirm_message, remet, dest, code_r, type);
 
         if(strcmp(dest, user) == 0 && strcmp(type, "?") == 0 && strcmp(code_r, code) == 0) {
@@ -311,14 +333,15 @@ void *create_code_queue(void *c) {
         if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
             perror("mq_send\n");
             mq_unlink(queue_name);
+            mq_unlink(user_queue);
             exit(1);
         }
-    }
 
-    mq_close(open_queue);
+        mq_close(open_queue);
+    }
+    
     int r = 0;
     pthread_exit((void *)&r);
-
 }
 
 void *retry_send_message(void *m) {
@@ -378,8 +401,10 @@ void send_message_in_queue(char *dest, char *msg_sent, int broadcast) {
     char queue[QUEUE_PREFIX + USER_MAX];
     char msg[MSGLEN];
 
+    fprintf(stderr, "d: %s\n", dest);
+    // return;
+
     char *code = get_message_code();
-    fprintf(stderr, "\ncodigo gerado: %s\n", code);
 
     if(broadcast == 1) {
         format_msg("all", msg_sent, code, msg);
@@ -403,15 +428,16 @@ void send_message_in_queue(char *dest, char *msg_sent, int broadcast) {
 
     pthread_t confirm;
 
-    if(open_queue < 0)
+    if(open_queue < 0) {
         fprintf(stderr, "\nUNKNOWNUSER %s\n", dest);
+        perror("mq_open: send");
+    }
     else {
         if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0)
             pthread_create(&retry, NULL, retry_send_message, (void *) r_msg);
         else
             pthread_create(&confirm, NULL, create_code_queue, (void *) code);
-    
-        free(r_msg);
+
         mq_close(open_queue);
     }
 }
@@ -430,8 +456,10 @@ void *send_message(void *m) {
         aux = users_list;
 
         while(aux != NULL) {
-            if(strcmp(aux->user_name, user) != 0)
+            if(strcmp(aux->user_name, user) != 0) {
+                fprintf(stderr, "aux: %s\n", aux->user_name);
                 send_message_in_queue(aux->user_name, msg_sent, 1);
+            }
             aux = aux->next;
         }
 
@@ -449,48 +477,66 @@ void *send_message(void *m) {
 void *confirm_message_received(void *c) {
     C_MESSAGE *c_msg = (C_MESSAGE *) c;
 
-    char queue_name[CODE_LEN + 12];
-    strcpy(queue_name, "/dev/mqueue/");
+    char *queue_name = malloc(sizeof(char) * (CODE_LEN + 10));
+    strcpy(queue_name, "/");
     strcat(queue_name, c_msg->code);
-
-    fprintf(stderr, "\ncode: %s\n", c_msg->code);
-    fprintf(stderr, "\nfila: %s\n", queue_name);
 
     char msg[CONFIRM_MESSAGE];
     char confirm_message[CONFIRM_MESSAGE];
 
     format_confirm_message(msg, c_msg->dest, c_msg->remet, c_msg->code, "?");
 
+    sleep(1);
+
     mqd_t open_queue = mq_open(queue_name, O_RDWR);
 
     if(open_queue < 0){
-        perror("\nmq_open: could not confirm message received.");
+        perror("\nmq_open");
+        mq_unlink(queue_name);
+        mq_unlink(user_queue);
+        exit(1);
     }
     else {
         if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
-            perror("\nmq_send: could not confirm message received.");
+            perror("\nmq_send");
+            mq_unlink(queue_name);
+            mq_unlink(user_queue);
+            exit(1);
         }
         else{
-            fprintf(stderr, "tam: sizeof %lu, const %d", sizeof(confirm_message), CONFIRM_MESSAGE);
+            mq_close(open_queue);
+
+            open_queue = mq_open(queue_name, O_RDONLY);
+
+            if(open_queue < 0) {
+                perror("mq_open");
+                mq_unlink(queue_name);
+                mq_unlink(user_queue);
+                exit(1);
+            }
+            
             if((mq_receive(open_queue, (void *)confirm_message, CONFIRM_MESSAGE, 0)) < 0) {
                 perror("\nmq_receive: could not confirm message received");
+                mq_unlink(queue_name);
             }
 
             char remet[USER_MAX], dest[USER_MAX], code_r[CODE_LEN], type[2];
 
             split_confirm_message(confirm_message, remet, dest, code_r, type);
 
-            if(strcmp(type, "n") == 0)
-                fprintf(stderr, "\nCould not confirm message received from %s\n", c_msg->remet);
-            else
-                fprintf(stderr, "\nMessage from %s confirmed", c_msg->remet);
+            if(strcmp(type, "n") == 0){
+                fprintf(stderr, "Could not confirm message received from %s\n\n", c_msg->remet);
+                mq_unlink(queue_name);
+            }
+            else {
+                fprintf(stderr, "INFO: Message from %s confirmed\n\n", c_msg->remet);
+                mq_unlink(queue_name);
+            }
         }
-
-        mq_close(open_queue);
     }
     
-    mq_unlink(queue_name);
-    free(c_msg);
+    // free(c_msg);
+    // free(queue_name);
     
     int r = 0;
     pthread_exit((void *)&r);
@@ -503,7 +549,13 @@ void *listen() {
 
     mqd_t open_queue = mq_open(queue, O_RDWR);
 
-    char message[MSGLEN], remet[USER_MAX], dest[USER_MAX], msg[MSG_MAX], code[CODE_LEN];
+    char *message = malloc(sizeof(char) * MSGLEN);
+
+    char *remet = malloc(sizeof(char) * USER_MAX);
+    char *dest = malloc(sizeof(char) * USER_MAX);
+    char *msg = malloc(sizeof(char) * MSG_MAX);
+    char *code = malloc(sizeof(char) * CODE_LEN);
+
     C_MESSAGE *confirm_msg = (C_MESSAGE*) malloc(sizeof(C_MESSAGE));
     pthread_t confirm;
 
@@ -531,7 +583,6 @@ void *listen() {
     }
 
     mq_close(open_queue);
-    free(confirm_msg);
     
     int r = 0;
     pthread_exit((void *)&r);
@@ -556,8 +607,47 @@ void users_list() {
     }
 }
 
-int main() {
+// void create_channel_queue(char *channel_name) {
+//     struct mq_attr attr;
+//     mode_t oldMask, newMask;
 
+//     strcpy(user_queue, "/");
+//     strcat(user_queue, channel_name);
+
+//     attr.mq_maxmsg = 10; // capacidade para 10 mensagens
+//     attr.mq_msgsize = sizeof(char) * MSGLEN; // tamanho de cada mensagem
+//     attr.mq_flags = 0;
+
+//     oldMask = umask((mode_t)0); //Pega umask antigo
+//     umask(0155); //Proíbe execução para o dono, leitura e execução para os demais 
+
+//     mqd_t open_queue = mq_open(user_queue, O_RDWR|O_CREAT, 0666, &attr);
+
+//     if(open_queue < 0) {
+//         perror("mq_open\n");
+//         mq_unlink(user_queue);
+//         exit(1);
+//     }
+
+//     umask(oldMask); //Seta umask novamente para o que estava 
+
+//     mq_close(open_queue);
+// }
+
+void create_channel(char *message) {
+    int len = strlen(message);
+
+    if(len > 6+CHANNEL_MAX){
+        fprintf(stderr, "O nome do canal só pode ter até 10 caracteres!\n\n");
+        return;
+    }
+
+    char channel_name[CHANNEL_MAX];
+    strncpy(channel_name, message + 6, CHANNEL_MAX);
+
+}
+
+int main() {
     user_register();
     
     pthread_t send, receive;
@@ -570,12 +660,19 @@ int main() {
 
     signal(SIGINT, handler_interruption);
 
+    char channel_test[5];
+
     while(1) {
         printf("\n");
         setbuf(stdin, NULL);
         scanf("%[^\n]s", message);
 
-        if(strcmp(message, "sair") == 0){
+        strncpy(channel_test, message, 5);
+        
+        if(strcmp(channel_test, "canal") == 0) {
+            create_channel(message);
+        }
+        else if(strcmp(message, "sair") == 0){
             mq_unlink(user_queue);
             exit(0);
         }
