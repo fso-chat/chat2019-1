@@ -1,0 +1,17 @@
+- Fazer função de saída de usuário:
+	A função deve apagar a fila do usuário e todos os arquivos referentes aos canais criados por ele. (feito)
+- Implementar trocar de mensagens com o canal:
+	O mediador (dono do canal) deve receber a mensagem e repassar a todos os membros do canal. (feito)
+	Os membros do canal devem saber que a mensagem foi enviada pelo canal (olhar protocolo) (feito)
+	Ao receber uma mensagem de um usuário não membro, o medidador deve mandar uma mensagem NOT A MEMBER. (feito)
+	Join automatico para o dono do canal (feito)
+	Verificar permissões da fila de canal (feito)
+	Ao sair, retirar usuário de todos os canais que ele participa.
+
+
+Extras:
+	Todos os membros do chat devem ser notifcados quando alguém criar um canal.
+
+
+- Rodar correteitor
+- Rodar entregueitor

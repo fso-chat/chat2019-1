@@ -19,11 +19,16 @@
 #define MESSAGE 512
 #define CODE_LEN 5
 #define CONFIRM_MESSAGE 30
-#define CHANNEL_MAX 10
+#define CHANNEL_MAX 9
 #define CHANNEL_MSGLEN 511
 
 char user[USER_MAX];
 char user_queue[QUEUE_PREFIX + USER_MAX];
+
+typedef struct channels {
+    char *channel_name;
+    struct channels *next;
+} CHANNELS;
 
 typedef struct users {
     char *user_name;
@@ -43,6 +48,11 @@ typedef struct confirm_message {
     char *code;
 } C_MESSAGE;
 
+CHANNELS *channels_list = NULL;
+CHANNELS *my_channels = NULL;
+
+void get_out();
+
 void create_queue() {
     struct mq_attr attr;
     mode_t oldMask, newMask;
@@ -61,7 +71,6 @@ void create_queue() {
 
     if(open_queue < 0) {
         perror("mq_open\n");
-        mq_unlink(user_queue);
         exit(1);
     }
 
@@ -96,6 +105,25 @@ void user_register() {
         exit(0);
     }
 
+}
+
+void destroy_channel(char *channel_name) {
+    char *channel_queue = malloc(sizeof(char) * 17);
+
+    strcpy(channel_queue, "/canal-");
+    strcat(channel_queue, channel_name);
+
+    char *channel_users = malloc(sizeof(char) * 26);
+
+    strcpy(channel_users, "canal-users-");
+    strcat(channel_users, channel_name);
+    strcat(channel_users, ".txt");
+
+    remove(channel_users);
+    mq_unlink(channel_queue);
+
+    free(channel_queue);
+    free(channel_users);
 }
 
 void split_message_received(char *message, char *remet, char *dest, char *msg, char *code) {
@@ -197,7 +225,7 @@ USERS *get_users_list(){
     char test[5];
 
     if(directory == NULL)
-        fprintf(stderr, "\nOcorreu um erro ao carregar usuários online.\n");
+        fprintf(stderr, "\nOcorreu um erro ao carregar usuários online.\n\n");
     else{
         while((files = readdir(directory)) != NULL){
             strncpy(test, files->d_name, 5);
@@ -274,6 +302,7 @@ void format_confirm_message(char *msg, char *remet, char *dest, char *code, char
 }
 
 void *create_code_queue(void *c) {
+    int r = 0;
     mode_t oldMask, newMask;
     char *code = (char *) c;
 
@@ -293,55 +322,52 @@ void *create_code_queue(void *c) {
 
     mqd_t open_queue = mq_open(queue_name, O_RDONLY|O_CREAT, 0666, &attr);
 
-    if(open_queue < 0) {
-        perror("mq_open\n");
-        mq_unlink(queue_name);
-        mq_unlink(user_queue);
-        exit(1);
-    }
-
     umask(oldMask);
+
+    if(open_queue < 0) {
+        fprintf(stderr, "\nERRO: Não foi possível enviar a confirmação de messagem.\n\n");
+        pthread_exit((void *)&r);
+    }
 
     char confirm_message[CONFIRM_MESSAGE];
     char remet[USER_MAX], dest[USER_MAX], code_r[CODE_LEN], type[2];
     char msg[CONFIRM_MESSAGE];
     
     if((mq_receive(open_queue, (void *)confirm_message, CONFIRM_MESSAGE, 0)) < 0) {
-        perror("\nmq_receive: could not confirm msg sent.");
+        fprintf(stderr, "\nERRO: Não foi possível enviar a confirmação de mensagem.\n\n");
+        mq_close(open_queue);
         mq_unlink(queue_name);
-    }
-    else {
-        mq_close(open_queue);
-
-        open_queue = mq_open(queue_name, O_WRONLY);
-
-        if(open_queue < 0) {
-            perror("\nmq_open");
-            mq_unlink(queue_name);
-            mq_unlink(user_queue);
-            exit(1);
-        }
-
-        split_confirm_message(confirm_message, remet, dest, code_r, type);
-
-        if(strcmp(dest, user) == 0 && strcmp(type, "?") == 0 && strcmp(code_r, code) == 0) {
-            format_confirm_message(msg, dest, remet, code_r, "y");
-        }
-        else {
-            format_confirm_message(msg, dest, remet, code_r, "n");
-        }
-
-        if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
-            perror("mq_send\n");
-            mq_unlink(queue_name);
-            mq_unlink(user_queue);
-            exit(1);
-        }
-
-        mq_close(open_queue);
+        pthread_exit((void *)&r);
     }
     
-    int r = 0;
+    mq_close(open_queue);
+
+    open_queue = mq_open(queue_name, O_WRONLY);
+
+    if(open_queue < 0) {
+        fprintf(stderr, "\nERRO: Não foi possível enviar a confirmação de mensagem.\n\n");
+        mq_unlink(queue_name);
+        pthread_exit((void *)&r);
+    }
+
+    split_confirm_message(confirm_message, remet, dest, code_r, type);
+
+    if(strcmp(dest, user) == 0 && strcmp(type, "?") == 0 && strcmp(code_r, code) == 0) {
+        format_confirm_message(msg, dest, remet, code_r, "y");
+    }
+    else {
+        format_confirm_message(msg, dest, remet, code_r, "n");
+    }
+
+    if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
+        fprintf(stderr, "\nERRO: Não foi possível enviar a confirmação de mensagem.\n\n");
+        mq_close(open_queue);
+        mq_unlink(queue_name);
+        pthread_exit((void *)&r);
+    }
+
+    mq_close(open_queue);
+
     pthread_exit((void *)&r);
 }
 
@@ -364,19 +390,20 @@ void *retry_send_message(void *m) {
     pthread_t confirm;
 
     if(open_queue < 0)
-        fprintf(stderr, "\nUNKNOWNUSER %s\n", r_msg->dest);
+        fprintf(stderr, "\nUNKNOWNUSER %s\n\n", r_msg->dest);
     else {
         int i;
         for(i = 0; i < 3; i++) {
             sleep(0.5);
             if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) >= 0) {
-                pthread_create(&confirm, NULL, create_code_queue, (void *) r_msg->code);
+                if(r_msg->broadcast != 1)
+                    pthread_create(&confirm, NULL, create_code_queue, (void *) r_msg->code);
                 break;
             }            
         }
 
         if(i == 3)
-            fprintf(stderr, "\nERRO %s:%s:%s\n", user, r_msg->dest, r_msg->msg_sent);
+            fprintf(stderr, "\nERRO %s:%s:%s\n\n", user, r_msg->dest, r_msg->msg_sent);
     
         mq_close(open_queue);
     }
@@ -427,14 +454,15 @@ void send_message_in_queue(char *dest, char *msg_sent, int broadcast) {
     pthread_t confirm;
 
     if(open_queue < 0) {
-        fprintf(stderr, "\nUNKNOWNUSER %s\n", dest);
+        fprintf(stderr, "\nUNKNOWNUSER %s\n\n", dest);
         perror("mq_open: send");
     }
     else {
         if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0)
             pthread_create(&retry, NULL, retry_send_message, (void *) r_msg);
         else
-            pthread_create(&confirm, NULL, create_code_queue, (void *) code);
+            if(broadcast != 1)
+                pthread_create(&confirm, NULL, create_code_queue, (void *) code);
 
         mq_close(open_queue);
     }
@@ -455,7 +483,6 @@ void *send_message(void *m) {
 
         while(aux != NULL) {
             if(strcmp(aux->user_name, user) != 0) {
-                fprintf(stderr, "aux: %s\n", aux->user_name);
                 send_message_in_queue(aux->user_name, msg_sent, 1);
             }
             aux = aux->next;
@@ -473,14 +500,15 @@ void *send_message(void *m) {
 }
 
 void *confirm_message_received(void *c) {
+    int r = 0;
     C_MESSAGE *c_msg = (C_MESSAGE *) c;
 
     char *queue_name = malloc(sizeof(char) * (CODE_LEN + 10));
     strcpy(queue_name, "/");
     strcat(queue_name, c_msg->code);
 
-    char msg[CONFIRM_MESSAGE];
-    char confirm_message[CONFIRM_MESSAGE];
+    char *msg = malloc(sizeof(char) * CONFIRM_MESSAGE);
+    char *confirm_message = malloc(sizeof(char) * CONFIRM_MESSAGE);
 
     format_confirm_message(msg, c_msg->dest, c_msg->remet, c_msg->code, "?");
 
@@ -489,55 +517,74 @@ void *confirm_message_received(void *c) {
     mqd_t open_queue = mq_open(queue_name, O_RDWR);
 
     if(open_queue < 0){
-        perror("\nmq_open");
+        fprintf(stderr, "\nERRO: Não foi possível obter a confirmação da mensagem!\n\n");
         mq_unlink(queue_name);
-        mq_unlink(user_queue);
-        exit(1);
+        pthread_exit((void *)&r);
+    }
+
+    if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
+        fprintf(stderr, "\nERRO: Não foi possível obter a confirmação da mensagem!\n\n");
+        mq_close(open_queue);
+        mq_unlink(queue_name);
+        pthread_exit((void *)&r);
+    }
+    
+    mq_close(open_queue);
+
+    open_queue = mq_open(queue_name, O_RDONLY);
+
+    if(open_queue < 0) {
+        fprintf(stderr, "\nERRO: Não foi possível obter a confirmação da mensagem!\n\n");
+        mq_unlink(queue_name);
+        pthread_exit((void *)&r);
+    }
+    
+    if((mq_receive(open_queue, (void *)confirm_message, CONFIRM_MESSAGE, 0)) < 0) {
+        fprintf(stderr, "\nERRO: Não foi possível obter a confirmação da mensagem!\n\n");
+        mq_close(open_queue);
+        mq_unlink(queue_name);
+        pthread_exit((void *)&r);
+    }
+
+    char remet[USER_MAX], dest[USER_MAX], code_r[CODE_LEN], type[2];
+
+    split_confirm_message(confirm_message, remet, dest, code_r, type);
+
+    if(strcmp(type, "n") == 0){
+        fprintf(stderr, "Could not confirm message received from %s\n\n", c_msg->remet);
     }
     else {
-        if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
-            perror("\nmq_send");
-            mq_unlink(queue_name);
-            mq_unlink(user_queue);
-            exit(1);
-        }
-        else{
-            mq_close(open_queue);
-
-            open_queue = mq_open(queue_name, O_RDONLY);
-
-            if(open_queue < 0) {
-                perror("mq_open");
-                mq_unlink(queue_name);
-                mq_unlink(user_queue);
-                exit(1);
-            }
-            
-            if((mq_receive(open_queue, (void *)confirm_message, CONFIRM_MESSAGE, 0)) < 0) {
-                perror("\nmq_receive: could not confirm message received");
-                mq_unlink(queue_name);
-            }
-
-            char remet[USER_MAX], dest[USER_MAX], code_r[CODE_LEN], type[2];
-
-            split_confirm_message(confirm_message, remet, dest, code_r, type);
-
-            if(strcmp(type, "n") == 0){
-                fprintf(stderr, "Could not confirm message received from %s\n\n", c_msg->remet);
-                mq_unlink(queue_name);
-            }
-            else {
-                fprintf(stderr, "INFO: Message from %s confirmed\n\n", c_msg->remet);
-                mq_unlink(queue_name);
-            }
-        }
+        fprintf(stderr, "INFO: Message from %s confirmed\n\n", c_msg->remet);
     }
     
-    // free(c_msg);
-    // free(queue_name);
-    
-    int r = 0;
+    mq_close(open_queue);
+    mq_unlink(queue_name);
+
     pthread_exit((void *)&r);
+}
+
+CHANNELS *remove_my_channels_list(CHANNELS *l, char *channel) {
+    char *channel_name = malloc(sizeof(char) * CHANNEL_MAX);
+    strncpy(channel_name, channel + 1, CHANNEL_MAX);
+
+    CHANNELS *aux = l;
+    CHANNELS *ant;
+
+    while(aux != NULL){
+        if(strcmp(aux->channel_name, channel_name) == 0)
+            break;
+        ant = aux;
+        aux = aux->next;
+    }
+
+    if(aux == l){
+        l = l->next;
+    }
+    else{
+        ant->next = aux->next;
+    }
+
+    return (l);
 }
 
 void *listen() {
@@ -560,7 +607,7 @@ void *listen() {
     while(1) {
         if((mq_receive(open_queue, (void *) message, MSGLEN, 0)) < 0) {
             perror("\nmq_receive");
-            mq_unlink(user_queue);
+            get_out();
             exit(1);
         }
 
@@ -569,13 +616,21 @@ void *listen() {
         confirm_msg->remet = remet;
         confirm_msg->dest = dest;
         confirm_msg->code = code;
-        
-        pthread_create(&confirm, NULL, confirm_message_received, (void *) confirm_msg);
 
         if(strcmp(dest, "all") == 0)
             fprintf(stderr, ">> Broadcast de %s: %s\n\n", remet, msg);
-        else
+        else if(remet[0] == '#') {
+            if(strcmp(msg, "DESTROYED") == 0) {
+                my_channels = remove_my_channels_list(my_channels, remet);
+            }
+            else {
+                fprintf(stderr, ">> %s: %s\n\n", remet, msg);
+            }
+        }
+        else {
             fprintf(stderr, ">> %s: %s\n\n", remet, msg);
+            pthread_create(&confirm, NULL, confirm_message_received, (void *) confirm_msg);
+        }
 
         memset(message, 0, strlen(message));
     }
@@ -587,7 +642,7 @@ void *listen() {
 }
 
 void handler_interruption() {
-    fprintf(stderr, "\nPara sair, digite 'sair'\n");
+    fprintf(stderr, "\nPara sair, digite 'sair'\n\n");
 }
 
 void users_list() {
@@ -603,6 +658,283 @@ void users_list() {
 
         destroy_users_list(users_list);
     }
+}
+
+void split_channel_message(char *message, char *remet, char *msg) {
+    int i = 0, j = 0, flag = 0; 
+
+    while(message[i] != '\0') {
+        if(message[i] != ':' && flag == 0){
+            remet[j] = message[i];
+            j++;
+        }
+        else if(message[i] != ':' && flag == 1){
+            msg[j] = message[i];
+            j++;
+        }
+        else {
+            remet[j] = '\0';
+            flag++;
+            j = 0;
+        }
+
+        i++;
+    }
+
+    msg[j] = '\0';
+}
+
+void join_in_channel(char *channel_name, char *user_join) {
+    char filename[26];
+
+    strcpy(filename, "canal-users-");
+    strcat(filename, channel_name);
+    strcat(filename, ".txt");
+
+    FILE *fp = fopen(filename, "a+");
+    char aux[USER_MAX];
+
+    if(fp == NULL) {
+        return;
+    }
+    else {
+        while(!feof(fp)) {
+            fscanf(fp, "%s", aux);
+
+            if(strcmp(aux, user_join) == 0) {
+                return;
+            }
+        }
+
+        fprintf(fp, "\n%s", user_join);
+        fclose(fp);
+    }
+}
+
+void leave_channel(char *channel_name, char *user_leave) {
+    char filename[26];
+    strcpy(filename, "canal-users-");
+    strcat(filename, channel_name);
+    strcat(filename, ".txt");
+
+    char new_filename[18];
+    strcpy(new_filename, "new-");
+    strcat(new_filename, channel_name);
+    strcat(new_filename, ".txt");
+
+    FILE *fp = fopen(filename, "r");
+    FILE *new = fopen(new_filename, "w+");
+
+    char aux[USER_MAX];
+
+    while(!feof(fp)) {
+        fscanf(fp, "%s", aux);
+
+        if(strcmp(aux, user_leave) != 0) {
+            fprintf(new, "\n%s", aux);
+        }
+    }
+
+    fclose(fp);
+    fclose(new);
+
+    remove(filename);
+    rename(new_filename, filename);
+}
+
+int user_in_channel(char *channel_users, char *channel_user) {
+    FILE *fp = fopen(channel_users, "r");
+
+    if(fp == NULL)
+        return 0;
+
+    char *aux = malloc(sizeof(char) * USER_MAX);
+
+    while(!feof(fp)) {
+        fscanf(fp, "%s", aux);
+        if(strcmp(aux, channel_user) == 0) {
+            free(aux);
+            fclose(fp);
+            return 1;
+        }
+    }
+
+    free(aux);
+    fclose(fp);
+
+    return 0;
+}
+
+void format_not_a_member_message(char *message, char *channel_name, char *dest) {
+    strcpy(message, "#");
+    strcat(message, channel_name);
+    strcat(message, ":");
+    strcat(message, dest);
+    strcat(message, ":");
+    strcat(message, "NOT A MEMBER");
+}
+
+void send_not_a_member_message(char *channel_name, char *dest) {
+    char *queue_name = malloc(sizeof(char) * (USER_MAX + 6));
+    strcpy(queue_name, "/chat-");
+    strcat(queue_name, dest);
+
+    mqd_t open_queue = mq_open(queue_name, O_WRONLY);
+
+    if(open_queue < 0) {
+        perror("mq_open");
+        return;
+    }
+    
+    char *message = malloc(sizeof(char) * 34);
+
+    format_not_a_member_message(message, channel_name, dest);
+
+    if((mq_send(open_queue, (void *) message, strlen(message), 0)) < 0) {
+        perror("mq_send");
+        mq_close(open_queue);
+        return;
+    }
+
+    mq_close(open_queue);
+}
+
+void format_channel_user_message(char *message, char *channel_name, char *remet, char *dest, char *msg) {
+    strcpy(message, "#");
+    strcat(message, channel_name);
+    strcat(message, ":");
+    strcat(message, dest);
+    strcat(message, ":");
+    strcat(message, "<");
+    strcat(message, remet);
+    strcat(message, ">");
+    strcat(message, " ");
+    strcat(message, msg);
+}
+
+void format_destroyed_message(char *message, char *channel_name, char *dest, char *msg) {
+    strcpy(message, "#");
+    strcat(message, channel_name);
+    strcat(message, ":");
+    strcat(message, dest);
+    strcat(message, ":");
+    strcat(message, msg);
+}
+
+void send_channel_user_message(char *channel_name, char *remet , char *dest, char *msg) {
+    char *queue_name = malloc(sizeof(char) * (USER_MAX + 6));
+    strcpy(queue_name, "/chat-");
+    strcat(queue_name, dest);
+
+    mqd_t open_queue = mq_open(queue_name, O_WRONLY);
+
+    if(open_queue < 0) {
+        perror("mq_open");
+        return;
+    }
+    
+    char *message = malloc(sizeof(char) * MSGLEN);
+
+    if(strcmp(msg, "DESTROYED") == 0) {
+        format_destroyed_message(message, channel_name, dest, msg);
+    }
+    else {
+        format_channel_user_message(message, channel_name, remet, dest, msg);
+    } 
+
+    if((mq_send(open_queue, (void *) message, strlen(message), 0)) < 0) {
+        perror("mq_open");
+        mq_close(open_queue);
+        return;
+    }
+
+    mq_close(open_queue);
+    
+}
+
+void send_message_to_channel(char *channel_name, char *remet, char *msg) {
+    char *channel_users = malloc(sizeof(char) * 26);
+
+    strcpy(channel_users, "canal-users-");
+    strcat(channel_users, channel_name);
+    strcat(channel_users, ".txt");
+
+    if(user_in_channel(channel_users, remet) == 0) {
+        send_not_a_member_message(channel_name, remet);
+        return;
+    }
+
+    FILE *fp = fopen(channel_users, "r");
+
+    if(fp == NULL)
+        return;
+
+    char *aux = malloc(sizeof(char) * USER_MAX);
+
+    while(!feof(fp)) {
+        fscanf(fp, "%s", aux);
+        if(strcmp(remet, aux) != 0) {
+            send_channel_user_message(channel_name, remet, aux, msg);
+        }
+    }
+
+    free(aux);
+
+}
+
+void *listen_channel(void *cn) {
+    char *channel_name = (char *) cn;
+    char channel_queue[CHANNEL_MAX + 7];
+
+    strcpy(channel_queue, "/canal-");
+    strcat(channel_queue, channel_name);
+
+    mqd_t open_queue = mq_open(channel_queue, O_RDONLY);
+
+    if(open_queue < 0) {
+        perror("mq_open (channel)");
+        get_out();
+        exit(1);
+    }
+
+    char *message = malloc(sizeof(char) * CHANNEL_MSGLEN);
+    char *remet = malloc(sizeof(char) * USER_MAX);
+    char *msg = malloc(sizeof(char) * MSG_MAX);
+
+    while(1) {
+        if((mq_receive(open_queue, (void *) message, CHANNEL_MSGLEN, 0)) < 0) {
+            perror("\nmq_receive (channel)");
+            get_out();
+            exit(1);
+        }
+
+        split_channel_message(message, remet, msg);
+
+        if(strcmp(msg, "JOIN") == 0) {
+            join_in_channel(channel_name, remet);
+        }
+        else if(strcmp(msg, "LEAVE") == 0) {
+            leave_channel(channel_name, remet);
+        }
+        else {
+            send_message_to_channel(channel_name, remet, msg);
+        }
+
+        memset(message, 0, strlen(message));
+        memset(remet, 0, strlen(remet));
+        memset(msg, 0, strlen(msg));
+    }
+}
+
+CHANNELS *insert_in_channels_list(char *channel_name, CHANNELS *list) {
+    CHANNELS *new = (CHANNELS*) malloc(sizeof(CHANNELS));
+
+    new->channel_name = malloc(sizeof(char) * CHANNEL_MAX);
+
+    strcpy(new->channel_name, channel_name);
+    new->next = list;
+
+    return new;
 }
 
 void create_channel_queue(char *channel_name) {
@@ -622,12 +954,15 @@ void create_channel_queue(char *channel_name) {
     umask(0155); //Proíbe execução para o dono, leitura e execução para os demais 
 
     mqd_t open_queue = mq_open(channel_queue, O_RDWR|O_CREAT, 0666, &attr);
+    pthread_t channel;
 
     if(open_queue < 0) {
-        fprintf(stderr, "\nERRO: Nao foi possivel criar o canal.\n");
+        fprintf(stderr, "\nERRO: Nao foi possivel criar o canal.\n\n");
     }
     else {
-        fprintf(stderr, "\nCanal %s criado com sucesso!\n", channel_name);
+        fprintf(stderr, "\nCanal %s criado com sucesso!\n\n", channel_name);
+        channels_list = insert_in_channels_list(channel_name, channels_list);
+        pthread_create(&channel, NULL, listen_channel, (void*) channel_name);
         mq_close(open_queue);
     }
 
@@ -644,7 +979,7 @@ int channel_exists(char *channel_name) {
     strcat(filename, channel_name);
 
     if(directory == NULL)
-        fprintf(stderr, "\nERRO: Ocorreu um erro ao criar canal.\n");
+        fprintf(stderr, "\nERRO: Ocorreu um erro ao criar canal.\n\n");
     else{
         while((files = readdir(directory)) != NULL){
             if(strcmp(files->d_name, filename) == 0)
@@ -660,45 +995,19 @@ void create_channel(char *message) {
     int len = strlen(message);
 
     if(len > (6+CHANNEL_MAX)){
-        fprintf(stderr, "\nERRO: O nome do canal não pode ter mais que 10 caracteres!\n");
+        fprintf(stderr, "\nERRO: O nome do canal não pode ter mais que 9 caracteres!\n\n");
         return;
     }
 
-    char channel_name[CHANNEL_MAX];
+    char *channel_name = malloc(sizeof(char) * CHANNEL_MAX);
     strncpy(channel_name, message + 6, CHANNEL_MAX);
 
     if(channel_exists(channel_name) == 1) {
-        fprintf(stderr, "\nERRO: Canal já existe!\n");
+        fprintf(stderr, "\nERRO: Canal já existe!\n\n");
     }
     else {
         create_channel_queue(channel_name);
-    }
-}
-
-void join_in_channel(char *channel_name, char *user_join) {
-    char filename[31];
-
-    strcpy(filename, "/tmp/canal-users-");
-    strcat(filename, channel_name);
-    strcat(filename, ".txt");
-
-    FILE *fp = fopen(filename, "a+");
-    char aux[USER_MAX];
-
-    if(fp == NULL) {
-        return;
-    }
-    else {
-        while(!feof(fp)) {
-            fscanf(fp, "%s", aux);
-
-            if(strcmp(aux, user_join) == 0) {
-                return;
-            }
-        }
-
-        fprintf(fp, "%s\n", user);
-        fclose(fp);
+        join_in_channel(channel_name, user);
     }
 }
 
@@ -723,14 +1032,14 @@ void send_join_message(char *channel_name) {
     mqd_t open_queue = get_channel_queue(channel_name);
 
     if(!open_queue) {
-        fprintf(stderr, "\nERRO: Não foi possível entrar no canal %s!\n", channel_name);
+        fprintf(stderr, "\nERRO: Não foi possível entrar no canal %s!\n\n", channel_name);
     }    
 
     char *msg = malloc(sizeof(char) * 15);
     format_channel_message(msg, "JOIN");
 
     if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
-        fprintf(stderr, "\nERRO: Não foi possível entrar no canal.\n");
+        fprintf(stderr, "\nERRO: Não foi possível entrar no canal.\n\n");
         return;
     }
 
@@ -759,7 +1068,7 @@ void join(char *message) {
     int len = strlen(message);
 
     if(len > (5 + CHANNEL_MAX)) {
-        fprintf(stderr, "\nERRO: O nome do canal não pode ter mais que 10 caracteres!\n");
+        fprintf(stderr, "\nERRO: O canal não existe!\n");
         return;
     }
 
@@ -768,9 +1077,10 @@ void join(char *message) {
 
     if(channel_exists(channel_name) == 1) {
         send_join_message(channel_name);
+        my_channels = insert_in_channels_list(channel_name, my_channels);
     }
     else {
-        fprintf(stderr, "\nERRO: O canal não existe!\n");
+        fprintf(stderr, "\nERRO: O canal não existe!\n\n");
     }
 
 }
@@ -779,7 +1089,7 @@ void leave(char *message) {
     int len = strlen(message);
 
     if(len > (6 + CHANNEL_MAX)) {
-        fprintf(stderr, "\nERRO: O nome do canal não pode ter mais que 10 caracteres!\n");
+        fprintf(stderr, "\nERRO: O canal não existe!\n\n");
         return;
     }
 
@@ -790,8 +1100,96 @@ void leave(char *message) {
         send_leave_message(channel_name);
     }
     else {
-        fprintf(stderr, "\nERRO: O canal não existe!\n");
+        fprintf(stderr, "\nERRO: O canal não existe!\n\n");
     }
+}
+
+void split_channel_message_queue(char *message, char *channel_name, char *msg) {
+    int j = 0, flag = 0;
+
+    for(int i = 1; i < strlen(message); i++) {
+        if(message[i] != ' ' && flag == 0) {
+            channel_name[j] = message[i];
+            j++;
+        }
+        else if(message[i] == ' ' && flag == 0) {
+            channel_name[j] = '\0';
+            flag++;
+            j = 0;
+        }
+        else {
+            msg[j] = message[i];
+            j++;
+        }
+    }
+
+    msg[j] = '\0';
+}
+
+void send_message_in_channel_queue(char *message) {
+    char *channel_name = malloc(sizeof(char) * CHANNEL_MAX);
+    char *msg = malloc(sizeof(char) * MSG_MAX);
+
+    split_channel_message_queue(message, channel_name, msg);
+
+    char *queue_name = malloc(sizeof(char) * (CHANNEL_MAX + 7));
+    strcpy(queue_name, "/canal-");
+    strcat(queue_name, channel_name);
+
+    mqd_t open_queue = mq_open(queue_name, O_WRONLY);
+
+    if(open_queue < 0) {
+        fprintf(stderr, "\nERRO: Não foi possível enviar a mensagem ao canal.\n\n");
+        return;
+    }
+
+    char *msg_queue = malloc(sizeof(char) * CHANNEL_MSGLEN);
+
+    format_channel_message(msg_queue, msg);
+
+    if((mq_send(open_queue, (void *) msg_queue, strlen(msg_queue), 0)) < 0){
+        fprintf(stderr, "\nERRO: Não foi possível enviar a mensagem ao canal.\n\n");
+        return;
+    }
+
+    mq_close(open_queue);
+}
+
+void send_destroy_msg(char *channel_name) {
+    char *message = malloc(sizeof(char) * 21);
+
+    strcpy(message, "#");
+    strcat(message, channel_name);
+    strcat(message, " ");
+    strcat(message, "DESTROYED");
+
+    send_message_in_channel_queue(message);
+}
+
+void get_out() {
+    CHANNELS *aux = channels_list;
+    CHANNELS *temp;
+
+    while(aux != NULL) {
+        send_destroy_msg(aux->channel_name);
+        fprintf(stderr, "\nSaindo...\n\n");
+        sleep(3);
+        destroy_channel(aux->channel_name);
+        temp = aux;
+        aux = aux->next;
+        free(temp);
+    }
+
+    aux = my_channels;
+
+    while(aux != NULL) {
+        send_leave_message(aux->channel_name);
+        temp = aux;
+        aux = aux->next;
+        free(temp);
+    }
+
+    mq_unlink(user_queue);
 }
 
 int main() {
@@ -841,15 +1239,19 @@ int main() {
         }
 
         if(strcmp(message, "sair") == 0){
-            mq_unlink(user_queue);
+            get_out();
             exit(0);
         }
         else if(strcmp(message, "list") == 0){            
             users_list();
             continue;
         }
+        else if (message[0] == '#') {
+            send_message_in_channel_queue(message);
+            continue;
+        }
         else if(message[0] != '@') {
-            fprintf(stderr, "\nUNKNOWNCOMMAND %s\n", message);
+            fprintf(stderr, "\nUNKNOWNCOMMAND %s\n\n", message);
             continue;
         }
 
