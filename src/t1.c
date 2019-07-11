@@ -19,7 +19,8 @@
 #define MESSAGE 512
 #define CODE_LEN 5
 #define CONFIRM_MESSAGE 30
-#define CHANNEL_MAX
+#define CHANNEL_MAX 10
+#define CHANNEL_MSGLEN 511
 
 char user[USER_MAX];
 char user_queue[QUEUE_PREFIX + USER_MAX];
@@ -401,9 +402,6 @@ void send_message_in_queue(char *dest, char *msg_sent, int broadcast) {
     char queue[QUEUE_PREFIX + USER_MAX];
     char msg[MSGLEN];
 
-    fprintf(stderr, "d: %s\n", dest);
-    // return;
-
     char *code = get_message_code();
 
     if(broadcast == 1) {
@@ -607,44 +605,193 @@ void users_list() {
     }
 }
 
-// void create_channel_queue(char *channel_name) {
-//     struct mq_attr attr;
-//     mode_t oldMask, newMask;
+void create_channel_queue(char *channel_name) {
+    struct mq_attr attr;
+    mode_t oldMask, newMask;
 
-//     strcpy(user_queue, "/");
-//     strcat(user_queue, channel_name);
+    char channel_queue[CHANNEL_MAX + 7];
 
-//     attr.mq_maxmsg = 10; // capacidade para 10 mensagens
-//     attr.mq_msgsize = sizeof(char) * MSGLEN; // tamanho de cada mensagem
-//     attr.mq_flags = 0;
+    strcpy(channel_queue, "/canal-");
+    strcat(channel_queue, channel_name);
 
-//     oldMask = umask((mode_t)0); //Pega umask antigo
-//     umask(0155); //Proíbe execução para o dono, leitura e execução para os demais 
+    attr.mq_maxmsg = 10; // capacidade para 10 mensagens
+    attr.mq_msgsize = sizeof(char) * CHANNEL_MSGLEN; // tamanho de cada mensagem
+    attr.mq_flags = 0;
 
-//     mqd_t open_queue = mq_open(user_queue, O_RDWR|O_CREAT, 0666, &attr);
+    oldMask = umask((mode_t)0); //Pega umask antigo
+    umask(0155); //Proíbe execução para o dono, leitura e execução para os demais 
 
-//     if(open_queue < 0) {
-//         perror("mq_open\n");
-//         mq_unlink(user_queue);
-//         exit(1);
-//     }
+    mqd_t open_queue = mq_open(channel_queue, O_RDWR|O_CREAT, 0666, &attr);
 
-//     umask(oldMask); //Seta umask novamente para o que estava 
+    if(open_queue < 0) {
+        fprintf(stderr, "\nERRO: Nao foi possivel criar o canal.\n");
+    }
+    else {
+        fprintf(stderr, "\nCanal %s criado com sucesso!\n", channel_name);
+        mq_close(open_queue);
+    }
 
-//     mq_close(open_queue);
-// }
+    umask(oldMask); //Seta umask novamente para o que estava
+}
+
+int channel_exists(char *channel_name) {
+    DIR *directory = opendir("/dev/mqueue"); 
+    struct dirent *files;
+    char *user_name;
+
+    char filename[CHANNEL_MAX + 6];
+    strcpy(filename, "canal-");
+    strcat(filename, channel_name);
+
+    if(directory == NULL)
+        fprintf(stderr, "\nERRO: Ocorreu um erro ao criar canal.\n");
+    else{
+        while((files = readdir(directory)) != NULL){
+            if(strcmp(files->d_name, filename) == 0)
+                return 1;
+        }
+    }
+    closedir(directory);
+
+    return 0;
+}
 
 void create_channel(char *message) {
     int len = strlen(message);
 
-    if(len > 6+CHANNEL_MAX){
-        fprintf(stderr, "O nome do canal só pode ter até 10 caracteres!\n\n");
+    if(len > (6+CHANNEL_MAX)){
+        fprintf(stderr, "\nERRO: O nome do canal não pode ter mais que 10 caracteres!\n");
         return;
     }
 
     char channel_name[CHANNEL_MAX];
     strncpy(channel_name, message + 6, CHANNEL_MAX);
 
+    if(channel_exists(channel_name) == 1) {
+        fprintf(stderr, "\nERRO: Canal já existe!\n");
+    }
+    else {
+        create_channel_queue(channel_name);
+    }
+}
+
+void join_in_channel(char *channel_name, char *user_join) {
+    char filename[31];
+
+    strcpy(filename, "/tmp/canal-users-");
+    strcat(filename, channel_name);
+    strcat(filename, ".txt");
+
+    FILE *fp = fopen(filename, "a+");
+    char aux[USER_MAX];
+
+    if(fp == NULL) {
+        return;
+    }
+    else {
+        while(!feof(fp)) {
+            fscanf(fp, "%s", aux);
+
+            if(strcmp(aux, user_join) == 0) {
+                return;
+            }
+        }
+
+        fprintf(fp, "%s\n", user);
+        fclose(fp);
+    }
+}
+
+void format_channel_message(char *msg, char *message) {
+    strcpy(msg, user);
+    strcat(msg, ":");
+    strcat(msg, message);
+}
+
+mqd_t get_channel_queue(char *channel_name) {
+    char channel_queue[CHANNEL_MAX + 7];
+
+    strcpy(channel_queue, "/canal-");
+    strcat(channel_queue, channel_name);
+
+    mqd_t open_queue = mq_open(channel_queue, O_WRONLY);
+
+    return open_queue;
+}
+
+void send_join_message(char *channel_name) {
+    mqd_t open_queue = get_channel_queue(channel_name);
+
+    if(!open_queue) {
+        fprintf(stderr, "\nERRO: Não foi possível entrar no canal %s!\n", channel_name);
+    }    
+
+    char *msg = malloc(sizeof(char) * 15);
+    format_channel_message(msg, "JOIN");
+
+    if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
+        fprintf(stderr, "\nERRO: Não foi possível entrar no canal.\n");
+        return;
+    }
+
+    mq_close(open_queue);
+}
+
+void send_leave_message(char *channel_name) {
+    mqd_t open_queue = get_channel_queue(channel_name);
+
+    if(!open_queue) {
+        fprintf(stderr, "\nERRO: Não foi possível sair do canal %s!\n", channel_name);
+    }    
+
+    char *msg = malloc(sizeof(char) * 16);
+    format_channel_message(msg, "LEAVE");
+
+    if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
+        fprintf(stderr, "\nERRO: Não foi possível sair do canal.\n");
+        return;
+    }
+
+    mq_close(open_queue);
+}
+
+void join(char *message) {
+    int len = strlen(message);
+
+    if(len > (5 + CHANNEL_MAX)) {
+        fprintf(stderr, "\nERRO: O nome do canal não pode ter mais que 10 caracteres!\n");
+        return;
+    }
+
+    char channel_name[CHANNEL_MAX];
+    strncpy(channel_name, message + 5, CHANNEL_MAX);
+
+    if(channel_exists(channel_name) == 1) {
+        send_join_message(channel_name);
+    }
+    else {
+        fprintf(stderr, "\nERRO: O canal não existe!\n");
+    }
+
+}
+
+void leave(char *message) {
+    int len = strlen(message);
+
+    if(len > (6 + CHANNEL_MAX)) {
+        fprintf(stderr, "\nERRO: O nome do canal não pode ter mais que 10 caracteres!\n");
+        return;
+    }
+
+    char channel_name[CHANNEL_MAX];
+    strncpy(channel_name, message + 6, CHANNEL_MAX);
+
+    if(channel_exists(channel_name) == 1) {
+        send_leave_message(channel_name);
+    }
+    else {
+        fprintf(stderr, "\nERRO: O canal não existe!\n");
+    }
 }
 
 int main() {
@@ -660,7 +807,9 @@ int main() {
 
     signal(SIGINT, handler_interruption);
 
-    char channel_test[5];
+    char channel_test[6];
+    char join_test[5];
+    char leave_test[6];
 
     while(1) {
         printf("\n");
@@ -668,11 +817,30 @@ int main() {
         scanf("%[^\n]s", message);
 
         strncpy(channel_test, message, 5);
+        channel_test[5] = '\0';
         
         if(strcmp(channel_test, "canal") == 0) {
             create_channel(message);
+            continue;
         }
-        else if(strcmp(message, "sair") == 0){
+
+        strncpy(join_test, message, 4);
+        join_test[4] = '\0';
+
+        if(strcmp(join_test, "join") == 0) {
+            join(message);
+            continue;
+        }
+
+        strncpy(leave_test, message, 5);
+        leave_test[5] = '\0';
+        
+        if(strcmp(leave_test, "leave") == 0) {
+            leave(message);
+            continue;
+        }
+
+        if(strcmp(message, "sair") == 0){
             mq_unlink(user_queue);
             exit(0);
         }
