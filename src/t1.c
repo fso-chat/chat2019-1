@@ -17,7 +17,6 @@
 #define MSGLEN 528
 #define MSG_MAX 500
 #define MESSAGE 512
-#define CODE_LEN 5
 #define CONFIRM_MESSAGE 30
 #define CHANNEL_MAX 9
 #define CHANNEL_MSGLEN 511
@@ -38,14 +37,12 @@ typedef struct users {
 typedef struct r_message {
     char *dest;
     char *msg_sent;
-    char *code;
     int broadcast;
 } R_MESSAGE;
 
 typedef struct confirm_message {
     char *remet;
     char *dest;
-    char *code;
 } C_MESSAGE;
 
 CHANNELS *channels_list = NULL;
@@ -126,7 +123,7 @@ void destroy_channel(char *channel_name) {
     free(channel_users);
 }
 
-void split_message_received(char *message, char *remet, char *dest, char *msg, char *code) {
+void split_message_received(char *message, char *remet, char *dest, char *msg) {
     int i = 0, j = 0, flag = 0;
 
     while(message[i] != '\0') {
@@ -138,30 +135,23 @@ void split_message_received(char *message, char *remet, char *dest, char *msg, c
             dest[j] = message[i];
             j++;
         }
-        else if(message[i] != ':' && flag == 2) {
-            msg[j] = message[i];
-            j++;
-        }
-        else if(message[i] == ':' && flag != 3) {
+        else if(message[i] == ':' && flag != 2) {
             if(flag == 0)
                 remet[j] = '\0';
             else if(flag == 1)
                 dest[j] = '\0';
-            else if(flag == 2)
-                msg[j] = '\0';
-
             flag++;
             j = 0;
         }
         else {
-            code[j] = message[i];
+            msg[j] = message[i];
             j++;
         }
 
         i++;
     }
 
-    code[j] = '\0';
+    msg[j] = '\0';
 }
 
 void split_message_sent(char *message, char *dest, char *msg) {
@@ -188,14 +178,12 @@ void split_message_sent(char *message, char *dest, char *msg) {
     msg[j] = '\0';
 }
 
-void format_msg(char *dest, char *msg_sent, char *code, char *msg) {
+void format_msg(char *dest, char *msg_sent, char *msg) {
     strcpy(msg, user);
     strcat(msg, ":");
     strcat(msg, dest);
     strcat(msg, ":");
     strcat(msg, msg_sent);
-    strcat(msg, ":");
-    strcat(msg, code);
 }
 
 char *split_file_name(char *name){
@@ -225,7 +213,7 @@ USERS *get_users_list(){
     char test[5];
 
     if(directory == NULL)
-        fprintf(stderr, "\nOcorreu um erro ao carregar usuários online.\n\n");
+        fprintf(stderr, "\nERRO:Ocorreu um erro ao carregar usuários online.\n\n");
     else{
         while((files = readdir(directory)) != NULL){
             strncpy(test, files->d_name, 5);
@@ -253,134 +241,16 @@ void destroy_users_list(USERS *l) {
     }
 }
 
-void split_confirm_message(char *message, char *remet, char *dest, char *code, char *type) {
-    int i = 0, j = 0, flag = 0;
-
-    while(message[i] != '\0') {
-        if(message[i] != ':' && flag == 0){
-            remet[j] = message[i];
-            j++;
-        }
-        else if(message[i] != ':' && flag == 1) {
-            dest[j] = message[i];
-            j++;
-        }
-        else if(message[i] != ':' && flag == 2) {
-            code[j] = message[i];
-            j++;
-        }
-        else if(message[i] == ':' && flag != 3) {
-            if(flag == 0)
-                remet[j] = '\0';
-            else if(flag == 1)
-                dest[j] = '\0';
-            else if(flag == 2)
-                code[j] = '\0';
-
-            flag++;
-            j = 0;
-        }
-        else {
-            type[j] = message[i];
-            j++;
-        }
-
-        i++;
-    }
-
-    type[j] = '\0';
-}
-
-void format_confirm_message(char *msg, char *remet, char *dest, char *code, char *type) {
-    strcpy(msg, remet);
-    strcat(msg, ":");
-    strcat(msg, dest);
-    strcat(msg, ":");
-    strcat(msg, code);
-    strcat(msg, ":");
-    strcat(msg, type);
-}
-
-void *create_code_queue(void *c) {
-    int r = 0;
-    mode_t oldMask, newMask;
-    char *code = (char *) c;
-
-    char queue_name[CODE_LEN+1];
-
-    strcpy(queue_name, "/");
-    strcat(queue_name, code);       
-
-    struct mq_attr attr;
-
-    attr.mq_maxmsg = 10; // capacidade para 10 mensagens
-    attr.mq_msgsize = sizeof(char) * CONFIRM_MESSAGE; // tamanho de cada mensagem
-    attr.mq_flags = 0;
-
-    oldMask = umask((mode_t)0); //Pega umask antigo
-    umask(7777);
-
-    mqd_t open_queue = mq_open(queue_name, O_RDONLY|O_CREAT, 0666, &attr);
-
-    umask(oldMask);
-
-    if(open_queue < 0) {
-        fprintf(stderr, "\nERRO: Não foi possível enviar a confirmação de messagem.\n\n");
-        pthread_exit((void *)&r);
-    }
-
-    char confirm_message[CONFIRM_MESSAGE];
-    char remet[USER_MAX], dest[USER_MAX], code_r[CODE_LEN], type[2];
-    char msg[CONFIRM_MESSAGE];
-    
-    if((mq_receive(open_queue, (void *)confirm_message, CONFIRM_MESSAGE, 0)) < 0) {
-        fprintf(stderr, "\nERRO: Não foi possível enviar a confirmação de mensagem.\n\n");
-        mq_close(open_queue);
-        mq_unlink(queue_name);
-        pthread_exit((void *)&r);
-    }
-    
-    mq_close(open_queue);
-
-    open_queue = mq_open(queue_name, O_WRONLY);
-
-    if(open_queue < 0) {
-        fprintf(stderr, "\nERRO: Não foi possível enviar a confirmação de mensagem.\n\n");
-        mq_unlink(queue_name);
-        pthread_exit((void *)&r);
-    }
-
-    split_confirm_message(confirm_message, remet, dest, code_r, type);
-
-    if(strcmp(dest, user) == 0 && strcmp(type, "?") == 0 && strcmp(code_r, code) == 0) {
-        format_confirm_message(msg, dest, remet, code_r, "y");
-    }
-    else {
-        format_confirm_message(msg, dest, remet, code_r, "n");
-    }
-
-    if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
-        fprintf(stderr, "\nERRO: Não foi possível enviar a confirmação de mensagem.\n\n");
-        mq_close(open_queue);
-        mq_unlink(queue_name);
-        pthread_exit((void *)&r);
-    }
-
-    mq_close(open_queue);
-
-    pthread_exit((void *)&r);
-}
-
 void *retry_send_message(void *m) {
     char queue[QUEUE_PREFIX + USER_MAX];
     char msg[MSGLEN];
     R_MESSAGE *r_msg = (R_MESSAGE *) m;
 
     if(r_msg->broadcast == 1) {
-        format_msg("all", r_msg->msg_sent, r_msg->code, msg);
+        format_msg("all", r_msg->msg_sent, msg);
     }
     else {
-        format_msg(r_msg->dest, r_msg->msg_sent, r_msg->code, msg);
+        format_msg(r_msg->dest, r_msg->msg_sent, msg);
     }
 
     strcpy(queue, "/chat-");
@@ -396,8 +266,6 @@ void *retry_send_message(void *m) {
         for(i = 0; i < 3; i++) {
             sleep(0.5);
             if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) >= 0) {
-                if(r_msg->broadcast != 1)
-                    pthread_create(&confirm, NULL, create_code_queue, (void *) r_msg->code);
                 break;
             }            
         }
@@ -412,30 +280,15 @@ void *retry_send_message(void *m) {
     pthread_exit((void *)&r);
 }
 
-char *get_message_code() {
-    char *code = malloc(sizeof(char) * CODE_LEN);
-    struct timeval time;
-    
-    gettimeofday(&time, NULL);
-    srand((time.tv_sec * 1000) + (time.tv_usec/1000));
-    int n = rand() % (100000 + 1);
-
-    sprintf(code, "%05d", n);
-
-    return code;
-}
-
 void send_message_in_queue(char *dest, char *msg_sent, int broadcast) {
     char queue[QUEUE_PREFIX + USER_MAX];
     char msg[MSGLEN];
 
-    char *code = get_message_code();
-
     if(broadcast == 1) {
-        format_msg("all", msg_sent, code, msg);
+        format_msg("all", msg_sent, msg);
     }
     else {
-        format_msg(dest, msg_sent, code, msg);
+        format_msg(dest, msg_sent, msg);
     }
 
     strcpy(queue, "/chat-");
@@ -448,7 +301,6 @@ void send_message_in_queue(char *dest, char *msg_sent, int broadcast) {
 
     r_msg->dest = dest;
     r_msg->msg_sent = msg_sent;
-    r_msg->code = code;
     r_msg->broadcast = broadcast;
 
     pthread_t confirm;
@@ -460,9 +312,6 @@ void send_message_in_queue(char *dest, char *msg_sent, int broadcast) {
     else {
         if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0)
             pthread_create(&retry, NULL, retry_send_message, (void *) r_msg);
-        else
-            if(broadcast != 1)
-                pthread_create(&confirm, NULL, create_code_queue, (void *) code);
 
         mq_close(open_queue);
     }
@@ -496,70 +345,6 @@ void *send_message(void *m) {
 
     memset(message, 0, strlen(message));
     int r = 0;
-    pthread_exit((void *)&r);
-}
-
-void *confirm_message_received(void *c) {
-    int r = 0;
-    C_MESSAGE *c_msg = (C_MESSAGE *) c;
-
-    char *queue_name = malloc(sizeof(char) * (CODE_LEN + 10));
-    strcpy(queue_name, "/");
-    strcat(queue_name, c_msg->code);
-
-    char *msg = malloc(sizeof(char) * CONFIRM_MESSAGE);
-    char *confirm_message = malloc(sizeof(char) * CONFIRM_MESSAGE);
-
-    format_confirm_message(msg, c_msg->dest, c_msg->remet, c_msg->code, "?");
-
-    sleep(1);
-
-    mqd_t open_queue = mq_open(queue_name, O_RDWR);
-
-    if(open_queue < 0){
-        fprintf(stderr, "\nERRO: Não foi possível obter a confirmação da mensagem!\n\n");
-        mq_unlink(queue_name);
-        pthread_exit((void *)&r);
-    }
-
-    if((mq_send(open_queue, (void *) msg, strlen(msg), 0)) < 0){
-        fprintf(stderr, "\nERRO: Não foi possível obter a confirmação da mensagem!\n\n");
-        mq_close(open_queue);
-        mq_unlink(queue_name);
-        pthread_exit((void *)&r);
-    }
-    
-    mq_close(open_queue);
-
-    open_queue = mq_open(queue_name, O_RDONLY);
-
-    if(open_queue < 0) {
-        fprintf(stderr, "\nERRO: Não foi possível obter a confirmação da mensagem!\n\n");
-        mq_unlink(queue_name);
-        pthread_exit((void *)&r);
-    }
-    
-    if((mq_receive(open_queue, (void *)confirm_message, CONFIRM_MESSAGE, 0)) < 0) {
-        fprintf(stderr, "\nERRO: Não foi possível obter a confirmação da mensagem!\n\n");
-        mq_close(open_queue);
-        mq_unlink(queue_name);
-        pthread_exit((void *)&r);
-    }
-
-    char remet[USER_MAX], dest[USER_MAX], code_r[CODE_LEN], type[2];
-
-    split_confirm_message(confirm_message, remet, dest, code_r, type);
-
-    if(strcmp(type, "n") == 0){
-        fprintf(stderr, "Could not confirm message received from %s\n\n", c_msg->remet);
-    }
-    else {
-        fprintf(stderr, "INFO: Message from %s confirmed\n\n", c_msg->remet);
-    }
-    
-    mq_close(open_queue);
-    mq_unlink(queue_name);
-
     pthread_exit((void *)&r);
 }
 
@@ -599,7 +384,6 @@ void *listen() {
     char *remet = malloc(sizeof(char) * USER_MAX);
     char *dest = malloc(sizeof(char) * USER_MAX);
     char *msg = malloc(sizeof(char) * MSG_MAX);
-    char *code = malloc(sizeof(char) * CODE_LEN);
 
     C_MESSAGE *confirm_msg = (C_MESSAGE*) malloc(sizeof(C_MESSAGE));
     pthread_t confirm;
@@ -611,25 +395,24 @@ void *listen() {
             exit(1);
         }
 
-        split_message_received(message, remet, dest, msg, code);
+        split_message_received(message, remet, dest, msg);
 
         confirm_msg->remet = remet;
         confirm_msg->dest = dest;
-        confirm_msg->code = code;
 
         if(strcmp(dest, "all") == 0)
-            fprintf(stderr, ">> Broadcast de %s: %s\n\n", remet, msg);
+            fprintf(stdout, ">> Broadcast de %s: %s\n\n", remet, msg);
         else if(remet[0] == '#') {
             if(strcmp(msg, "DESTROYED") == 0) {
+                fprintf(stdout, "Canal %s destrído!\n\n", remet);
                 my_channels = remove_my_channels_list(my_channels, remet);
             }
             else {
-                fprintf(stderr, ">> %s: %s\n\n", remet, msg);
+                fprintf(stdout, ">> %s: %s\n\n", remet, msg);
             }
         }
         else {
-            fprintf(stderr, ">> %s: %s\n\n", remet, msg);
-            pthread_create(&confirm, NULL, confirm_message_received, (void *) confirm_msg);
+            fprintf(stdout, ">> %s: %s\n\n", remet, msg);
         }
 
         memset(message, 0, strlen(message));
@@ -642,7 +425,7 @@ void *listen() {
 }
 
 void handler_interruption() {
-    fprintf(stderr, "\nPara sair, digite 'sair'\n\n");
+    fprintf(stdout, "\nPara sair, digite 'sair'\n\n");
 }
 
 void users_list() {
@@ -650,9 +433,9 @@ void users_list() {
     USERS *aux = users_list;
 
     if(users_list) {
-        fprintf(stderr, "\nLista de Usuários Online:\n\n");
+        fprintf(stdout, "\nLista de Usuários Online:\n\n");
         while(aux != NULL) {
-            fprintf(stderr, "%s\n", aux->user_name);
+            fprintf(stdout, "%s\n", aux->user_name);
             aux = aux->next;
         }
 
@@ -960,7 +743,7 @@ void create_channel_queue(char *channel_name) {
         fprintf(stderr, "\nERRO: Nao foi possivel criar o canal.\n\n");
     }
     else {
-        fprintf(stderr, "\nCanal %s criado com sucesso!\n\n", channel_name);
+        fprintf(stdout, "\nCanal %s criado com sucesso!\n\n", channel_name);
         channels_list = insert_in_channels_list(channel_name, channels_list);
         pthread_create(&channel, NULL, listen_channel, (void*) channel_name);
         mq_close(open_queue);
@@ -1172,7 +955,7 @@ void get_out() {
 
     while(aux != NULL) {
         send_destroy_msg(aux->channel_name);
-        fprintf(stderr, "\nSaindo...\n\n");
+        fprintf(stdout, "\nSaindo...\n\n");
         sleep(3);
         destroy_channel(aux->channel_name);
         temp = aux;
