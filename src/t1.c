@@ -348,10 +348,7 @@ void *send_message(void *m) {
     pthread_exit((void *)&r);
 }
 
-CHANNELS *remove_my_channels_list(CHANNELS *l, char *channel) {
-    char *channel_name = malloc(sizeof(char) * CHANNEL_MAX);
-    strncpy(channel_name, channel + 1, CHANNEL_MAX);
-
+CHANNELS *remove_my_channels_list(CHANNELS *l, char *channel_name) {
     CHANNELS *aux = l;
     CHANNELS *ant;
 
@@ -387,6 +384,8 @@ void *listen() {
 
     C_MESSAGE *confirm_msg = (C_MESSAGE*) malloc(sizeof(C_MESSAGE));
     pthread_t confirm;
+    
+    char *channel_name = malloc(sizeof(char) * CHANNEL_MAX);
 
     while(1) {
         if((mq_receive(open_queue, (void *) message, MSGLEN, 0)) < 0) {
@@ -404,8 +403,9 @@ void *listen() {
             fprintf(stdout, ">> Broadcast de %s: %s\n\n", remet, msg);
         else if(remet[0] == '#') {
             if(strcmp(msg, "DESTROYED") == 0) {
-                fprintf(stdout, "Canal %s destrído!\n\n", remet);
-                my_channels = remove_my_channels_list(my_channels, remet);
+                strncpy(channel_name, channel + 1, CHANNEL_MAX);
+                fprintf(stdout, "Canal %s destruído!\n\n", channel_name);
+                my_channels = remove_my_channels_list(my_channels, channel_name);
             }
             else {
                 fprintf(stdout, ">> %s: %s\n\n", remet, msg);
@@ -881,6 +881,7 @@ void leave(char *message) {
 
     if(channel_exists(channel_name) == 1) {
         send_leave_message(channel_name);
+        my_channels = remove_my_channels_list(my_channels, channel_name);
     }
     else {
         fprintf(stderr, "\nERRO: O canal não existe!\n\n");
